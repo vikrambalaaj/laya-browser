@@ -77,15 +77,43 @@ Hacker News), an off-host refusal, a typing refusal without the flag, and a type
 ## Jev Browser on Laya
 
 Laya's server speaks the TypeSafe `/v1/systemone` protocol that
-[Jev Browser](https://github.com/jkudish/jev-browser) uses, so Jev Browser can run on local Laya:
+[Jev Browser](https://github.com/jkudish/jev-browser) uses for its decision model, so Jev Browser
+can run on local Laya with no cloud key. Three small files in `laya/` make it work well:
+
+- `serve_laya.py` runs `laya-serve` with the choice-option cap raised (upstream caps a question
+  at 100 options; Jev offers up to 200 page elements).
+- `jev_laya_proxy.py` sits between Jev and Laya (127.0.0.1:8798 -> 8799). Per step it keeps the
+  12 page elements whose labels best overlap the task words, asks Laya with the bare task as state
+  and label-only options (the format that measured 4/4 above), asks Jev's goal/stuck questions
+  separately with page context, hides scroll/back/done from the pick, and reports arrival when
+  the landed page's title or URL carries the task words. Without it Laya's pick over 126 raw
+  options was flat (top probability 0.03) and it declared done on the start page.
+- `serve-laya.sh start|stop|status|logs` runs both, loopback only, multilingual checkpoint only.
+  `jev-laya` is a drop-in for `jev-browser` that starts them on demand and sets
+  `JEV_PROVIDER=typesafe`, `TYPESAFE_BASE_URL`, and `JEV_BROWSER_MODEL=multilingual`.
 
 ```bash
-LAYA_MODELS=multilingual LAYA_DEFAULT_MODEL=multilingual LAYA_HOST=127.0.0.1 LAYA_PORT=8799 laya-serve
-JEV_PROVIDER=typesafe TYPESAFE_API_KEY=local TYPESAFE_BASE_URL=http://127.0.0.1:8799 \
-  jev-browser run "Open the downloads page" https://www.python.org --format markdown
+laya/jev-laya run "Open the downloads page" https://www.python.org --format markdown
 ```
 
-See `laya/` for the launcher used in this repo's own setup.
+For Claude Code, point `.mcp.json` at `laya/jev-laya` with no args and the `jev_navigate` MCP
+tool runs on Laya.
+
+Measured 2026-10-03 (M1, about 0.5 s per decision):
+
+| task | result |
+|---|---|
+| python.org: "Open the downloads page" | 1 step, p=1.00, arrived |
+| python.org: "Open the community page" | 1 step, p=0.90, arrived |
+| Wikipedia main page: "Go to the Current events page" | 1 step, p=0.96, arrived |
+| Hacker News: "Open the newest page" | 1 step, p=0.66, arrived |
+| Hacker News: "Open the newest submissions list" | wrong: picked Submit |
+| Wikipedia article: "Open the History of programming languages article" | lost: link is past Jev's 200-element cap |
+
+Two caveats worth knowing. Jev sends an unknown model name (`jev-latest`); without an explicit
+`model`, `laya-serve` auto-routes English text to the English checkpoint and downloads it, so
+the wrapper always sets `JEV_BROWSER_MODEL=multilingual`. And phrase tasks with the target page's
+own words: Laya is a decision model, not a reader, and wording that overlaps a wrong label wins.
 
 ## License
 
