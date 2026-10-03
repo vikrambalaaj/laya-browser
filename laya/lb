@@ -1,0 +1,72 @@
+#!/Users/vikrambala/jarvis/laya/.venv/bin/python
+"""lb: Jarvis's fast browser. Talks to the warm laya_browserd service.
+
+  lb "<goal>" <start-url> [--stop-when X] [--hosts a.com,b.org] [--allow-typing] [--headed]
+                          [--max-steps N] [--chars N] [--json]
+  lb classify <url>
+  lb status
+"""
+import json, os, subprocess, sys, time, urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASE = f"http://127.0.0.1:{os.environ.get('LAYA_BROWSERD_PORT', '8797')}"
+
+
+def http(path, payload=None, timeout=300):
+    req = urllib.request.Request(BASE + path, data=json.dumps(payload).encode() if payload is not None else None,
+                                 headers={"Content-Type": "application/json"}, method="POST" if payload is not None else "GET")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def ensure():
+    try:
+        return http("/health", timeout=3).get("status") == "ok"
+    except Exception:
+        subprocess.run([os.path.join(HERE, "browserd.sh"), "start"], check=False)
+        for _ in range(120):
+            try:
+                if http("/health", timeout=3).get("status") == "ok":
+                    return True
+            except Exception:
+                time.sleep(1)
+    return False
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__); return 0
+    if argv[0] == "status":
+        try: print(json.dumps(http("/health", timeout=3), indent=1))
+        except Exception as e: print(f"service down: {e}"); return 1
+        return 0
+    if not ensure():
+        print("laya_browserd did not start; see ~/jarvis/laya/browserd.sh logs"); return 1
+    if argv[0] == "classify":
+        print(json.dumps(http("/classify", {"url": argv[1]}), indent=1, ensure_ascii=False)); return 0
+    goal, url = argv[0], argv[1]
+    opts = {"url": url, "goal": goal}
+    it = iter(argv[2:]); chars = 3000; as_json = False
+    for a in it:
+        if a == "--stop-when": opts["stop_when"] = next(it)
+        elif a == "--hosts": opts["allowed_hosts"] = next(it)
+        elif a == "--allow-typing": opts["allow_typing"] = True
+        elif a == "--headed": opts["headed"] = True
+        elif a == "--max-steps": opts["max_steps"] = int(next(it))
+        elif a == "--chars": chars = int(next(it))
+        elif a == "--json": as_json = True
+    t = http("/browse", opts)
+    if as_json:
+        print(json.dumps(t, indent=1, ensure_ascii=False)); return 0
+    print(f"status={t['status']}  {t['elapsed_ms']} ms  final={t.get('final_title')!r}  {t.get('final_url')}")
+    for s in t.get("steps", []):
+        print(f"  step {s['step']}: {s.get('action')!r} p={s.get('action_p')}  -> {s.get('result')}")
+    print(f"  run_dir={t.get('run_dir')}")
+    txt = (t.get("final_text") or "")[:chars]
+    if txt:
+        print("---- page text ----"); print(txt)
+    return 0 if t["status"] == "done" else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -25,6 +25,7 @@ STOPWORDS = set("a an the of to in on for and or with about open find go click p
                 "wikipedia article link search press visit read get into from this that is are be".split())
 EXCERPT_CHARS = 1500       # classify
 BROWSE_EXCERPT_CHARS = 700  # browse: shorter state keeps per-step latency down
+FINAL_TEXT_CHARS = 6000     # page text returned with the trace as evidence
 
 CLASSIFY_QUESTIONS = {
     "page_type": {
@@ -123,8 +124,12 @@ def host_allowed(host, allowed):
     return any(host == h or host.endswith("." + h) for h in allowed)
 
 
-def open_browser(pw, allowed_hosts, headed=False):
-    browser = pw.chromium.launch(headless=not headed)
+def launch_browser(pw, headed=False):
+    return pw.chromium.launch(headless=not headed)
+
+
+def new_page(browser, allowed_hosts):
+    """Fresh isolated context + page on an already-running browser, with the host gate."""
     ctx = browser.new_context(viewport={"width": 1280, "height": 900})
     blocked = []
 
@@ -137,6 +142,12 @@ def open_browser(pw, allowed_hosts, headed=False):
     ctx.route("**/*", gate)
     page = ctx.new_page()
     page.set_default_timeout(20000)
+    return ctx, page, blocked
+
+
+def open_browser(pw, allowed_hosts, headed=False):
+    browser = launch_browser(pw, headed)
+    ctx, page, blocked = new_page(browser, allowed_hosts)
     return browser, page, blocked
 
 
@@ -151,17 +162,31 @@ def snapshot(page, chars=EXCERPT_CHARS):
 def cmd_classify(args):
     from playwright.sync_api import sync_playwright
     agent = load_agent(args.device)
-    questions = CLASSIFY_QUESTIONS
-    if args.questions:
-        with open(args.questions) as f:
-            questions = json.load(f)
-    allowed = [host_of(args.url)]
     with sync_playwright() as pw:
-        browser, page, _ = open_browser(pw, allowed, args.headed)
+        browser = launch_browser(pw, args.headed)
+        try:
+            return classify_once(agent, browser, args)
+        finally:
+            browser.close()
+
+
+def classify_once(agent, browser, args):
+    """Classify one page on an already-running browser. `args` needs url, questions
+    (path or None), max_len, json; a SimpleNamespace is fine."""
+    questions = CLASSIFY_QUESTIONS
+    if getattr(args, "questions", None):
+        if isinstance(args.questions, dict):
+            questions = args.questions
+        else:
+            with open(args.questions) as f:
+                questions = json.load(f)
+    allowed = [host_of(args.url)]
+    if True:  # context on the caller's browser
+        ctx, page, _ = new_page(browser, allowed)
         page.goto(args.url, wait_until="domcontentloaded")
         page.wait_for_timeout(500)
         info = snapshot(page)
-        browser.close()
+        ctx.close()
 
     state = {"title": info["title"], "text": info["text"]}
     agent.predict({"title": "warm-up", "text": "warm-up"}, questions, max_len=args.max_len)
@@ -179,8 +204,10 @@ def cmd_classify(args):
         elif a["type"] == "score":
             out["answers"][qid] = {"score": round(a["score"], 2),
                                    "label": a["legend"][str(int(round(a["score"])))]}
-    if args.json:
+    if getattr(args, "json", False):
         print(json.dumps(out, indent=2, ensure_ascii=False))
+    elif getattr(args, "quiet", False):
+        pass
     else:
         log(f"\n{out['title']!r}  ({out['url']})")
         log(f"  region={out['region']}  page_chars={out['page_chars']}  "
@@ -280,7 +307,24 @@ def cmd_browse(args):
 
     agent = load_agent(args.device)
     embed_fn = embed_fn_from_agent(agent)
-    allowed = [h.strip().lower() for h in (args.allowed_hosts or host_of(args.url)).split(",") if h.strip()]
+    with sync_playwright() as pw:
+        browser = launch_browser(pw, args.headed)
+        try:
+            return browse_once(agent, embed_fn, browser, args)
+        finally:
+            browser.close()
+
+
+def browse_once(agent, embed_fn, browser, args):
+    """Run one goal on an already-running browser and return the trace.
+
+    `args` needs: url, goal, max_steps, k, allowed_hosts (csv string or list or None),
+    allow_typing, done_threshold, stop_when, out, max_len. A SimpleNamespace is fine.
+    """
+    hosts = args.allowed_hosts
+    if isinstance(hosts, (list, tuple)):
+        hosts = ",".join(hosts)
+    allowed = [h.strip().lower() for h in (hosts or host_of(args.url)).split(",") if h.strip()]
     typed = quoted_text(args.goal)
     os.makedirs(args.out, exist_ok=True)
     trace = {"goal": args.goal, "start_url": args.url, "allowed_hosts": allowed, "steps": []}
@@ -288,8 +332,8 @@ def cmd_browse(args):
     tried = {}   # url -> set of element texts clicked there (never offered twice on that page)
     typed_done = False
 
-    with sync_playwright() as pw:
-        browser, page, blocked = open_browser(pw, allowed, args.headed)
+    if True:  # context on the caller's browser
+        ctx, page, blocked = new_page(browser, allowed)
         page.goto(args.url, wait_until="domcontentloaded")
         page.wait_for_timeout(600)
 
@@ -428,17 +472,17 @@ def cmd_browse(args):
             trace["steps"].append(rec)
 
         try:
-            final = snapshot(page)
+            final = snapshot(page, FINAL_TEXT_CHARS)
             page.screenshot(path=os.path.join(args.out, "final.png"))
         except Exception:  # noqa: BLE001
             last = trace["steps"][-1] if trace["steps"] else {}
-            final = {"url": last.get("url", ""), "title": last.get("title", "")}
+            final = {"url": last.get("url", ""), "title": last.get("title", ""), "text": ""}
         if status == "max_steps" and stop_matches(args.stop_when, final):
             status = "done"
         trace.update({"status": status, "final_url": final["url"], "final_title": final["title"],
-                      "blocked_requests": blocked[:10]})
+                      "final_text": final.get("text", ""), "blocked_requests": blocked[:10]})
         try:
-            browser.close()
+            ctx.close()
         except Exception:  # noqa: BLE001
             pass
 

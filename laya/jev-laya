@@ -1,13 +1,13 @@
 #!/bin/bash
-# Jev Browser with local Laya as its decision model.
-# Usage: jev-laya run "<task>" <start-url> [jev-browser options]   (or no args: MCP stdio server)
+# Jev Browser with local Laya as its decision model, served by the warm laya_browserd
+# (TypeSafe /v1/systemone with the shortlist rewrite applied in-process).
+# Usage: jev-laya run "<task>" <start-url> [jev-browser options]   (no args: MCP stdio server)
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-PORT="${LAYA_PORT:-8799}"
-"$DIR/serve-laya.sh" start >&2 || exit 1
+"$DIR/browserd.sh" start >&2 || exit 1
 export JEV_PROVIDER=typesafe
-export TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-local}"      # server runs without a key; SDK insists one is set
-export TYPESAFE_BASE_URL="http://127.0.0.1:${JEV_LAYA_PORT:-8798}"   # shortlist proxy in front of laya-serve
+export TYPESAFE_API_KEY="${TYPESAFE_API_KEY:-local}"      # service needs no key; the SDK insists one is set
+export TYPESAFE_BASE_URL="http://127.0.0.1:${LAYA_BROWSERD_PORT:-8797}"
 export JEV_BROWSER_MODEL="${JEV_BROWSER_MODEL:-multilingual}"
 exec jev-browser "$@"

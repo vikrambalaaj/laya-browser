@@ -19,6 +19,15 @@ PY=~/jarvis/laya/.venv/bin/python
 S=~/jarvis/.claude/skills/laya-browser/scripts/laya_browse.py
 ```
 
+## Warm service (fastest path)
+
+`~/jarvis/laya/laya_browserd.py` keeps one Laya model and one Chromium resident (launchd agent
+`com.jarvis.laya-browserd`, 127.0.0.1:8797) and runs the same loop as below without the cold
+start: about 5 s per goal end to end instead of ~15 s. Use it through the `laya_navigate` /
+`laya_classify` MCP tools or `~/jarvis/laya/lb "<goal>" <url> --stop-when X`. The script below
+is the standalone fallback and the reference implementation; `browse_once` / `classify_once`
+in it are what the service calls.
+
 ## Mode 1: classify a page
 
 ```bash
